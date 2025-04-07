@@ -468,4 +468,35 @@ static inline void free_tree(Node* root) {
     free(root);
 }
 
+/* ===============================
+   UTILITY TASKS & ALIASES
+   - Struktur dan fungsi untuk memudahkan penulisan task
+   - serta alias untuk inisialisasi dan penyelesaian thread pool.
+=============================== */
+
+// Struktur untuk argument task penulisan.
+typedef struct {
+    char *start;
+    size_t length;
+} WriteTaskArg;
+
+// Fungsi task yang menulis ke memory menggunakan pola 0x55.
+static inline void berry_write_task(void *arg) {
+    WriteTaskArg *warg = (WriteTaskArg *) arg;
+    memset(warg->start, 0x55, warg->length);
+    free(warg);
+}
+
+// Fungsi untuk memulai thread pool (alias dari inisialisasi dan start).
+static inline void archanaberry_start(BerryThreadPool* pool, int num_threads) {
+    init_thread_pool(pool, num_threads);
+    start_thread_pool(pool);
+}
+
+// Fungsi untuk menyelesaikan thread pool (alias dari wait dan stop).
+static inline void archanaberry_finish(BerryThreadPool* pool) {
+    wait_for_tasks(pool);
+    stop_thread_pool(pool);
+}
+
 #endif // BERRYHANDLER_H
