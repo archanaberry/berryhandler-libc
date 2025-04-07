@@ -90,7 +90,7 @@ Detailed API documentation is provided within the header file `berryhandler.h` t
 
 ## License
 
-This project is licensed under the MIT License. See the [ABPL](https://github.com/archanaberry/Lisensi) file for details.
+This project is licensed under the ABPL (Archana Berry Public License) License. See the [ABPL](https://github.com/archanaberry/Lisensi) file for details.
 
 ---
 
