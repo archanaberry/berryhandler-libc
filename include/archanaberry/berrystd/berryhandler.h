@@ -9,6 +9,9 @@
 // Uncomment untuk mode debug (menampilkan log dan leak-checking)
 // #define BERRY_DEBUG
 
+// Uncomment untuk mode otomatis (variabel dan fungsi auto cleanup)
+// #define BERRY_AUTOMATIC
+
 // Jika menggunakan compiler GCC/Clang, aktifkan cleanup attribute (opsional)
 #ifdef __GNUC__
 #define BERRY_CLEANUP(func) __attribute__((cleanup(func)))
@@ -25,6 +28,7 @@
 #include <errno.h>
 #include <string.h>
 #include <stdatomic.h>
+#include <stdarg.h>
 
 // ===============================
 // Logging Callback & Error Handling
@@ -53,10 +57,10 @@ static inline void berry_default_log(const char *fmt, ...) {
 
 // Struktur untuk alokasi memori.
 typedef struct ArchanaberryMemory {
-    void *ptr;         // Pointer ke blok memori
-    size_t size;       // Ukuran blok memori
-    int owner_id;      // ID pemilik (simulasi)
-    atomic_int ref_count; // Reference count (atomic)
+    void *ptr;              // Pointer ke blok memori
+    size_t size;            // Ukuran blok memori
+    int owner_id;           // ID pemilik (simulasi)
+    atomic_int ref_count;   // Reference count (atomic)
 } ArchanaberryMemory;
 
 // --- Memory Pool untuk Registry Node (BerryMemNode) ---
@@ -201,6 +205,33 @@ static inline void berry_release(ArchanaberryMemory *mem) {
 #define berry_borrow berry_retain
 #define berry_return berry_release
 
+// Fungsi cleanup untuk ArchanaberryMemory
+static inline void berry_release_cleanup(ArchanaberryMemory **mem) {
+    if (mem && *mem) {
+        berry_release(*mem);
+        *mem = NULL;
+    }
+}
+
+/* ===============================
+   MAKRO ALOKASI MODE OTOMATIS/MANUAL
+   - Jika BERRY_AUTOMATIC didefinisikan, maka alokasi dengan BERRY_AUTO_ALLOC
+     akan secara otomatis dipanggil cleanup-nya saat variabel keluar scope.
+   - Jika manual, gunakan BERRY_MANUAL_ALLOC dan panggil berry_release() secara eksplisit.
+=============================== */
+
+#ifdef BERRY_AUTOMATIC
+    #define BERRY_AUTO_ALLOC(var, size, owner) \
+        ArchanaberryMemory *var BERRY_CLEANUP(berry_release_cleanup) = berry_alloc(size, owner)
+#else
+    #define BERRY_AUTO_ALLOC(var, size, owner) \
+        ArchanaberryMemory *var = berry_alloc(size, owner)
+#endif
+
+// Untuk mode manual, makro ini hanyalah alias dari berry_alloc()
+#define BERRY_MANUAL_ALLOC(var, size, owner) \
+    ArchanaberryMemory *var = berry_alloc(size, owner)
+
 /* ===============================
    THREAD POOL & SCHEDULER
 =============================== */
@@ -216,8 +247,6 @@ typedef struct Task {
     bool cancelled;    // Flag pembatalan task
     struct Task* next;
 } Task;
-
-typedef void (*TaskFunction)(void*);
 
 typedef struct {
     pthread_t threads[BERRY_MAX_THREADS];
@@ -400,9 +429,9 @@ static inline void berry_task_stats(BerryThreadPool* pool, int *pending, int *ex
     if (executed) *executed = atomic_load(&pool->tasks_executed);
 }
 
-// ===============================
-// TREE & RECURSIVE CRAWLING
-// ===============================
+/* ===============================
+   TREE & RECURSIVE CRAWLING
+=============================== */
 
 typedef struct Node {
     int value;
@@ -437,14 +466,6 @@ static inline void free_tree(Node* root) {
     free_tree(root->left);
     free_tree(root->right);
     free(root);
-}
-
-// Fungsi cleanup untuk ArchanaberryMemory
-static inline void berry_release_cleanup(ArchanaberryMemory **mem) {
-    if (mem && *mem) {
-        berry_release(*mem);
-        *mem = NULL;
-    }
 }
 
 #endif // BERRYHANDLER_H
