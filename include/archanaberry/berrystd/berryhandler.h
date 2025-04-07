@@ -201,9 +201,12 @@ static inline void berry_release(ArchanaberryMemory *mem) {
 #define berry_borrow berry_retain
 #define berry_return berry_release
 
-// ===============================
-// THREAD POOL & SCHEDULER
-// ===============================
+/* ===============================
+   THREAD POOL & SCHEDULER
+=============================== */
+
+// Deklarasikan tipe TaskFunction terlebih dahulu.
+typedef void (*TaskFunction)(void*);
 
 // --- Memory Pool untuk Task ---
 typedef struct Task {
