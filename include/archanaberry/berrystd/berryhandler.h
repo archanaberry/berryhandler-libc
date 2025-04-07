@@ -439,4 +439,12 @@ static inline void free_tree(Node* root) {
     free(root);
 }
 
+// Fungsi cleanup untuk ArchanaberryMemory
+static inline void berry_release_cleanup(ArchanaberryMemory **mem) {
+    if (mem && *mem) {
+        berry_release(*mem);
+        *mem = NULL;
+    }
+}
+
 #endif // BERRYHANDLER_H
