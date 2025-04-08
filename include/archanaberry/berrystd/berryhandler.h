@@ -1,24 +1,6 @@
 #ifndef BERRYHANDLER_H
 #define BERRYHANDLER_H
 
-// Konfigurasi
-#ifndef BERRY_MAX_THREADS
-#define BERRY_MAX_THREADS 8
-#endif
-
-// Uncomment untuk mode debug (menampilkan log dan leak-checking)
-// #define BERRY_DEBUG
-
-// Uncomment untuk mode otomatis (variabel dan fungsi auto cleanup)
-// #define BERRY_AUTOMATIC
-
-// Jika menggunakan compiler GCC/Clang, aktifkan cleanup attribute (opsional)
-#ifdef __GNUC__
-#define BERRY_CLEANUP(func) __attribute__((cleanup(func)))
-#else
-#define BERRY_CLEANUP(func)
-#endif
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -29,10 +11,34 @@
 #include <string.h>
 #include <stdatomic.h>
 #include <stdarg.h>
+#include <stdint.h>
 
-// ===============================
-// Logging Callback & Error Handling
-// ===============================
+// -----------------------------------------------------------------------------
+// Konfigurasi
+// -----------------------------------------------------------------------------
+
+#ifndef BERRY_MAX_THREADS
+#define BERRY_MAX_THREADS 8
+#endif
+
+// Uncomment untuk debug log dan leak-check
+// #define BERRY_DEBUG
+
+// Uncomment untuk mode otomatis (auto cleanup dengan cleanup attribute)
+// #define BERRY_AUTOMATIC
+
+// Uncomment untuk mengaktifkan arena allocator (opsional)
+// #define BERRY_USE_ARENA
+
+#ifdef __GNUC__
+#define BERRY_CLEANUP(func) __attribute__((cleanup(func)))
+#else
+#define BERRY_CLEANUP(func)
+#endif
+
+// -----------------------------------------------------------------------------
+// Logger Callback & Error Handling
+// -----------------------------------------------------------------------------
 
 typedef void (*BerryLogger)(const char *fmt, ...);
 static BerryLogger berry_logger = NULL;
@@ -50,30 +56,30 @@ static inline void berry_default_log(const char *fmt, ...) {
 #endif
 }
 
-// ===============================
-// MEMORY HANDLER (Archanaberry)
-// Smart allocation dengan reference counting dan registry
-// ===============================
+// -----------------------------------------------------------------------------
+// MEMORY HANDLER - Archanaberry Memory (dengan Pointer Validation)
+// -----------------------------------------------------------------------------
 
-// Struktur untuk alokasi memori.
+// Nilai magic untuk pointer validasi
+#define BERRY_MAGIC 0xBEEFBEEF
+
 typedef struct ArchanaberryMemory {
-    void *ptr;              // Pointer ke blok memori
+    uint32_t magic;         // Untuk validasi pointer
+    void *ptr;              // Pointer ke blok memori (real data)
     size_t size;            // Ukuran blok memori
     int owner_id;           // ID pemilik (simulasi)
     atomic_int ref_count;   // Reference count (atomic)
 } ArchanaberryMemory;
 
-// --- Memory Pool untuk Registry Node (BerryMemNode) ---
+// --- Registry tracking & free-list untuk registry node ---
 typedef struct BerryMemNode {
     ArchanaberryMemory *mem;
     struct BerryMemNode* next;
 } BerryMemNode;
 
-// Free-list sederhana untuk BerryMemNode
 static BerryMemNode* berry_memnode_pool = NULL;
 static pthread_mutex_t berry_memnode_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-// Dapatkan node dari pool atau alokasikan baru
 static inline BerryMemNode* berry_alloc_memnode(void) {
     pthread_mutex_lock(&berry_memnode_pool_mutex);
     BerryMemNode* node = berry_memnode_pool;
@@ -91,7 +97,6 @@ static inline BerryMemNode* berry_alloc_memnode(void) {
     return node;
 }
 
-// Kembalikan node ke pool
 static inline void berry_free_memnode(BerryMemNode* node) {
     pthread_mutex_lock(&berry_memnode_pool_mutex);
     node->next = berry_memnode_pool;
@@ -99,11 +104,11 @@ static inline void berry_free_memnode(BerryMemNode* node) {
     pthread_mutex_unlock(&berry_memnode_pool_mutex);
 }
 
-// Registry global untuk tracking alokasi
+// Registry global untuk tracking alokasi memory
 static BerryMemNode* berry_mem_list = NULL;
 static pthread_mutex_t berry_mem_list_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-// Menambahkan blok memori ke registry global.
+// Menambahkan blok memori ke registry
 static inline void berry_register_allocation(ArchanaberryMemory *mem) {
     pthread_mutex_lock(&berry_mem_list_mutex);
     BerryMemNode* node = berry_alloc_memnode();
@@ -117,7 +122,7 @@ static inline void berry_register_allocation(ArchanaberryMemory *mem) {
 #endif
 }
 
-// Menghapus blok memori dari registry global.
+// Menghapus blok memori dari registry
 static inline void berry_unregister_allocation(ArchanaberryMemory *mem) {
     pthread_mutex_lock(&berry_mem_list_mutex);
     BerryMemNode **curr = &berry_mem_list;
@@ -137,7 +142,7 @@ static inline void berry_unregister_allocation(ArchanaberryMemory *mem) {
 #endif
 }
 
-// Mengecek dan mencetak blok memori yang belum dibebaskan (jika ada).
+// Fungsi untuk memeriksa memory leak dan statistik alokasi
 static inline void berry_check_leaks() {
 #ifdef BERRY_DEBUG
     pthread_mutex_lock(&berry_mem_list_mutex);
@@ -156,7 +161,6 @@ static inline void berry_check_leaks() {
 #endif
 }
 
-// Fungsi statistik: hitung jumlah alokasi aktif
 static inline int berry_active_allocations() {
     int count = 0;
     pthread_mutex_lock(&berry_mem_list_mutex);
@@ -166,7 +170,7 @@ static inline int berry_active_allocations() {
     return count;
 }
 
-// Mengalokasikan blok memori baru. Inisialisasi ref_count ke 1.
+// Alokasi blok memori baru dengan validasi dan setting magic number
 static inline ArchanaberryMemory* berry_alloc(size_t size, int owner_id) {
     ArchanaberryMemory* mem = malloc(sizeof(ArchanaberryMemory));
     if (!mem) {
@@ -181,23 +185,25 @@ static inline ArchanaberryMemory* berry_alloc(size_t size, int owner_id) {
     }
     mem->size = size;
     mem->owner_id = owner_id;
+    mem->magic = BERRY_MAGIC;  // set magic agar bisa divalidasi
     atomic_init(&mem->ref_count, 1);
     berry_register_allocation(mem);
     return mem;
 }
 
-// Meningkatkan reference count (retain).
+// Retain dan release dengan validasi magic number
 static inline void berry_retain(ArchanaberryMemory *mem) {
-    assert(mem != NULL);
+    assert(mem != NULL && mem->magic == BERRY_MAGIC && "Pointer invalid atau sudah dibebaskan!");
     atomic_fetch_add(&mem->ref_count, 1);
 }
 
-// Mengurangi reference count (release) dan membebaskan memori bila count mencapai 0.
 static inline void berry_release(ArchanaberryMemory *mem) {
-    assert(mem != NULL);
+    assert(mem != NULL && mem->magic == BERRY_MAGIC && "Pointer invalid atau sudah dibebaskan!");
     if (atomic_fetch_sub(&mem->ref_count, 1) == 1) {
         berry_unregister_allocation(mem);
         free(mem->ptr);
+        // Tandai pointer sebagai tidak valid dengan mengubah magic
+        mem->magic = 0;
         free(mem);
     }
 }
@@ -205,20 +211,13 @@ static inline void berry_release(ArchanaberryMemory *mem) {
 #define berry_borrow berry_retain
 #define berry_return berry_release
 
-// Fungsi cleanup untuk ArchanaberryMemory
+// Cleanup handler untuk automatic cleanup (BERRY_AUTOMATIC)
 static inline void berry_release_cleanup(ArchanaberryMemory **mem) {
     if (mem && *mem) {
         berry_release(*mem);
         *mem = NULL;
     }
 }
-
-/* ===============================
-   MAKRO ALOKASI MODE OTOMATIS/MANUAL
-   - Jika BERRY_AUTOMATIC didefinisikan, maka alokasi dengan BERRY_AUTO_ALLOC
-     akan secara otomatis dipanggil cleanup-nya saat variabel keluar scope.
-   - Jika manual, gunakan BERRY_MANUAL_ALLOC dan panggil berry_release() secara eksplisit.
-=============================== */
 
 #ifdef BERRY_AUTOMATIC
     #define BERRY_AUTO_ALLOC(var, size, owner) \
@@ -228,23 +227,75 @@ static inline void berry_release_cleanup(ArchanaberryMemory **mem) {
         ArchanaberryMemory *var = berry_alloc(size, owner)
 #endif
 
-// Untuk mode manual, makro ini hanyalah alias dari berry_alloc()
 #define BERRY_MANUAL_ALLOC(var, size, owner) \
     ArchanaberryMemory *var = berry_alloc(size, owner)
 
-/* ===============================
-   THREAD POOL & SCHEDULER
-=============================== */
 
-// Deklarasikan tipe TaskFunction terlebih dahulu.
+// -----------------------------------------------------------------------------
+// ARENA ALLOCATOR (OPSIONAL)
+// -----------------------------------------------------------------------------
+
+#ifdef BERRY_USE_ARENA
+typedef struct BerryArena {
+    void *memory;       // blok memori arena
+    size_t capacity;    // total kapasitas
+    size_t offset;      // offset alokasi berikutnya
+} BerryArena;
+
+// Buat arena baru dengan kapasitas tertentu
+static inline BerryArena* berry_arena_create(size_t capacity) {
+    BerryArena* arena = malloc(sizeof(BerryArena));
+    if (!arena) {
+        fprintf(stderr, "Error: Gagal mengalokasikan BerryArena: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    arena->memory = malloc(capacity);
+    if (!arena->memory) {
+        fprintf(stderr, "Error: Gagal mengalokasikan memori untuk arena: %s\n", strerror(errno));
+        free(arena);
+        exit(EXIT_FAILURE);
+    }
+    arena->capacity = capacity;
+    arena->offset = 0;
+    return arena;
+}
+
+// Alokasikan memori dari arena
+static inline void* berry_arena_alloc(BerryArena *arena, size_t size) {
+    if (arena->offset + size > arena->capacity) {
+        fprintf(stderr, "Error: Kapasitas arena tidak mencukupi\n");
+        return NULL; // bisa juga exit jika dianggap fatal
+    }
+    void *ptr = (char*)arena->memory + arena->offset;
+    arena->offset += size;
+    return ptr;
+}
+
+// Reset arena (membebaskan semua alokasi sekaligus tanpa free per objek)
+static inline void berry_arena_reset(BerryArena *arena) {
+    arena->offset = 0;
+}
+
+// Hancurkan arena dan bebaskan memori
+static inline void berry_arena_destroy(BerryArena *arena) {
+    if (arena) {
+        free(arena->memory);
+        free(arena);
+    }
+}
+#endif // BERRY_USE_ARENA
+
+// -----------------------------------------------------------------------------
+// THREAD POOL & SCHEDULER
+// -----------------------------------------------------------------------------
+
 typedef void (*TaskFunction)(void*);
 
-// --- Memory Pool untuk Task ---
 typedef struct Task {
     TaskFunction function;
     void* argument;
-    int priority;      // Nilai prioritas (semakin besar, semakin tinggi prioritas)
-    bool cancelled;    // Flag pembatalan task
+    int priority;      // semakin besar, semakin tinggi prioritas
+    bool cancelled;
     struct Task* next;
 } Task;
 
@@ -255,14 +306,12 @@ typedef struct {
     pthread_cond_t condition;
     bool stop;
     int num_threads;
-    atomic_int tasks_executed; // Statistik jumlah task yang telah diproses
+    atomic_int tasks_executed;
 } BerryThreadPool;
 
-// Free-list sederhana untuk Task
 static Task* task_pool = NULL;
 static pthread_mutex_t task_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-// Ambil task dari pool atau alokasikan baru
 static inline Task* berry_alloc_task(void) {
     pthread_mutex_lock(&task_pool_mutex);
     Task* t = task_pool;
@@ -283,7 +332,6 @@ static inline Task* berry_alloc_task(void) {
     return t;
 }
 
-// Kembalikan task ke pool
 static inline void berry_free_task(Task* t) {
     pthread_mutex_lock(&task_pool_mutex);
     t->next = task_pool;
@@ -291,7 +339,6 @@ static inline void berry_free_task(Task* t) {
     pthread_mutex_unlock(&task_pool_mutex);
 }
 
-// Inisialisasi thread pool.
 static inline void init_thread_pool(BerryThreadPool* pool, int num_threads) {
     assert(pool != NULL);
     pool->num_threads = (num_threads > BERRY_MAX_THREADS) ? BERRY_MAX_THREADS : num_threads;
@@ -308,7 +355,6 @@ static inline void init_thread_pool(BerryThreadPool* pool, int num_threads) {
     }
 }
 
-// Menambahkan task ke thread pool dengan dukungan prioritas.
 static inline void add_task(BerryThreadPool* pool, TaskFunction func, void* arg, int priority) {
     assert(pool != NULL && func != NULL);
     Task* new_task = berry_alloc_task();
@@ -319,7 +365,6 @@ static inline void add_task(BerryThreadPool* pool, TaskFunction func, void* arg,
     new_task->next = NULL;
     
     pthread_mutex_lock(&(pool->queue_lock));
-    // Sisipkan sesuai prioritas (simple insertion sort)
     if (pool->task_queue == NULL || new_task->priority > pool->task_queue->priority) {
         new_task->next = pool->task_queue;
         pool->task_queue = new_task;
@@ -335,7 +380,6 @@ static inline void add_task(BerryThreadPool* pool, TaskFunction func, void* arg,
     pthread_mutex_unlock(&(pool->queue_lock));
 }
 
-// Membatalkan task yang belum dieksekusi berdasarkan fungsi dan argumen (sederhana).
 static inline void cancel_task(BerryThreadPool* pool, TaskFunction func, void* arg) {
     pthread_mutex_lock(&(pool->queue_lock));
     Task* curr = pool->task_queue;
@@ -348,7 +392,6 @@ static inline void cancel_task(BerryThreadPool* pool, TaskFunction func, void* a
     pthread_mutex_unlock(&(pool->queue_lock));
 }
 
-// Fungsi worker untuk setiap thread.
 static inline void* thread_worker(void* arg) {
     BerryThreadPool* pool = (BerryThreadPool*)arg;
     while (1) {
@@ -376,7 +419,6 @@ static inline void* thread_worker(void* arg) {
     return NULL;
 }
 
-// Memulai thread pool.
 static inline void start_thread_pool(BerryThreadPool* pool) {
     assert(pool != NULL);
     for (int i = 0; i < pool->num_threads; i++) {
@@ -387,7 +429,6 @@ static inline void start_thread_pool(BerryThreadPool* pool) {
     }
 }
 
-// Menunggu hingga antrian task kosong.
 static inline void wait_for_tasks(BerryThreadPool* pool) {
     while (1) {
         pthread_mutex_lock(&(pool->queue_lock));
@@ -395,11 +436,10 @@ static inline void wait_for_tasks(BerryThreadPool* pool) {
         pthread_mutex_unlock(&(pool->queue_lock));
         if (empty)
             break;
-        usleep(1000); // Tidur 1ms untuk mencegah busy-wait.
+        usleep(1000);
     }
 }
 
-// Menghentikan thread pool dan membersihkan task yang tersisa.
 static inline void stop_thread_pool(BerryThreadPool* pool) {
     assert(pool != NULL);
     pthread_mutex_lock(&(pool->queue_lock));
@@ -418,7 +458,6 @@ static inline void stop_thread_pool(BerryThreadPool* pool) {
     pthread_cond_destroy(&(pool->condition));
 }
 
-// Fungsi statistik: jumlah task tersisa dan jumlah task dieksekusi.
 static inline void berry_task_stats(BerryThreadPool* pool, int *pending, int *executed) {
     int count = 0;
     pthread_mutex_lock(&(pool->queue_lock));
@@ -429,9 +468,9 @@ static inline void berry_task_stats(BerryThreadPool* pool, int *pending, int *ex
     if (executed) *executed = atomic_load(&pool->tasks_executed);
 }
 
-/* ===============================
-   TREE & RECURSIVE CRAWLING
-=============================== */
+// -----------------------------------------------------------------------------
+// TREE & RECURSIVE CRAWLING (tetap sebagai utility)
+// -----------------------------------------------------------------------------
 
 typedef struct Node {
     int value;
@@ -439,7 +478,6 @@ typedef struct Node {
     struct Node* right;
 } Node;
 
-// Traversal in-order secara rekursif.
 static inline void archanaberry_crawl(Node* root) {
     if (root == NULL) return;
     archanaberry_crawl(root->left);
@@ -447,7 +485,6 @@ static inline void archanaberry_crawl(Node* root) {
     archanaberry_crawl(root->right);
 }
 
-// Membuat node tree baru dengan nilai tertentu.
 static inline Node* create_node(int value) {
     Node* node = malloc(sizeof(Node));
     if (!node) {
@@ -460,7 +497,6 @@ static inline Node* create_node(int value) {
     return node;
 }
 
-// Melepas seluruh tree secara rekursif.
 static inline void free_tree(Node* root) {
     if (root == NULL) return;
     free_tree(root->left);
@@ -468,32 +504,26 @@ static inline void free_tree(Node* root) {
     free(root);
 }
 
-/* ===============================
-   UTILITY TASKS & ALIASES
-   - Struktur dan fungsi untuk memudahkan penulisan task
-   - serta alias untuk inisialisasi dan penyelesaian thread pool.
-=============================== */
+// -----------------------------------------------------------------------------
+// UTILITY TASKS & ALIASES
+// -----------------------------------------------------------------------------
 
-// Struktur untuk argument task penulisan.
 typedef struct {
     char *start;
     size_t length;
 } WriteTaskArg;
 
-// Fungsi task yang menulis ke memory menggunakan pola 0x55.
 static inline void berry_write_task(void *arg) {
     WriteTaskArg *warg = (WriteTaskArg *) arg;
     memset(warg->start, 0x55, warg->length);
     free(warg);
 }
 
-// Fungsi untuk memulai thread pool (alias dari inisialisasi dan start).
 static inline void archanaberry_start(BerryThreadPool* pool, int num_threads) {
     init_thread_pool(pool, num_threads);
     start_thread_pool(pool);
 }
 
-// Fungsi untuk menyelesaikan thread pool (alias dari wait dan stop).
 static inline void archanaberry_finish(BerryThreadPool* pool) {
     wait_for_tasks(pool);
     stop_thread_pool(pool);
