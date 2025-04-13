@@ -1,7 +1,3 @@
-Below is an updated README written entirely in English. It has been reorganized to list the examples in order (using test0.c, test1.c, test3.c, test4.c, test5.c, and test6.c) and includes benchmark comparisons with the standard C implementation. You can adjust the wording as needed for your repository.
-
----
-
 # BerryHandler-libc
 
 **Archana Berry Memory & Scheduling Library** for standard libc programs in C, offering automatic memory handling, a lightweight design, high speed and efficiency, effortless coding, built-in anti-memory leak mechanisms, and smart address detection.
